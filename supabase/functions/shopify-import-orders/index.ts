@@ -43,6 +43,8 @@ interface ShopifyLineItem {
   name?: string;
   quantity: number;
   price: string;
+  total_discount?: string | null;
+  discount_allocations?: { amount: string }[];
 }
 
 interface ShopifyRefundLineItem {
@@ -61,6 +63,7 @@ interface ShopifyDiscountCode {
 
 interface ShopifyOrder {
   id: number;
+  order_number?: number;
   processed_at?: string;
   created_at: string;
   cancelled_at: string | null;
@@ -69,6 +72,15 @@ interface ShopifyOrder {
   refunds: ShopifyRefund[];
   discount_codes?: ShopifyDiscountCode[];
   payment_gateway_names?: string[];
+  total_shipping_price_set?: { shop_money?: { amount?: string } };
+  shipping_lines?: { price?: string }[];
+}
+
+// Frete cobrado do cliente no checkout.
+function shippingRevenue(order: ShopifyOrder): number {
+  const fromSet = Number(order.total_shipping_price_set?.shop_money?.amount);
+  if (Number.isFinite(fromSet)) return fromSet;
+  return (order.shipping_lines ?? []).reduce((sum, l) => sum + (Number(l.price) || 0), 0);
 }
 
 interface SaleRow {
@@ -79,9 +91,21 @@ interface SaleRow {
   product_name: string;
   quantity: number;
   gross_amount: number;
+  discount_amount: number;
   sale_date: string;
   has_coupon: boolean;
   payment_method: "pix" | "cartao";
+}
+
+// Desconto real do item: `price` da Shopify é sempre o preço de tabela, o
+// cupom entra à parte. Cupom aplicado no pedido inteiro chega rateado em
+// discount_allocations; desconto direto na linha vem em total_discount.
+// Os dois juntos nunca aparecem preenchidos pro mesmo desconto, então
+// preferimos o rateio quando existe pra não contar duas vezes.
+function lineDiscount(item: ShopifyLineItem): number {
+  const allocated = (item.discount_allocations ?? []).reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+  if (allocated > 0) return allocated;
+  return Number(item.total_discount) || 0;
 }
 
 // Qualquer gateway com "pix" no nome (o app que processa Pix varia por
@@ -154,6 +178,10 @@ function buildSaleRows(order: ShopifyOrder): SaleRow[] {
       const refunded = refundedByLineItem.get(item.id);
       const quantity = Math.max(0, item.quantity - (refunded?.quantity ?? 0));
       const gross_amount = Math.max(0, Number(item.price) * item.quantity - (refunded?.amount ?? 0));
+      // Desconto acompanha as unidades que sobraram depois do reembolso.
+      const discount_amount = item.quantity > 0
+        ? Number((lineDiscount(item) * (quantity / item.quantity)).toFixed(2))
+        : 0;
       return {
         shopify_order_id: order.id,
         shopify_line_item_id: item.id,
@@ -162,6 +190,7 @@ function buildSaleRows(order: ShopifyOrder): SaleRow[] {
         product_name: item.variant_title ? `${item.title} - ${item.variant_title}` : (item.title ?? item.name ?? "Sem nome"),
         quantity,
         gross_amount,
+        discount_amount,
         sale_date: order.processed_at ?? order.created_at,
         has_coupon: hasCoupon,
         payment_method: paymentMethod,
@@ -202,10 +231,19 @@ async function importOrders(supabase: SupabaseClient, since: string): Promise<nu
   const orders = await fetchOrdersSince(accessToken, since);
 
   const rows: SaleRow[] = [];
+  const shipRows: Record<string, unknown>[] = [];
   for (const order of orders) {
     if (order.cancelled_at) continue;
     if (!COUNTABLE_FINANCIAL_STATUS.has(order.financial_status)) continue;
-    rows.push(...buildSaleRows(order));
+    const saleRows = buildSaleRows(order);
+    if (saleRows.length === 0) continue;
+    rows.push(...saleRows);
+    shipRows.push({
+      shopify_order_id: order.id,
+      order_number: order.order_number != null ? String(order.order_number) : null,
+      revenue: shippingRevenue(order),
+      revenue_synced_at: new Date().toISOString(),
+    });
   }
 
   if (rows.length === 0) return 0;
@@ -214,6 +252,12 @@ async function importOrders(supabase: SupabaseClient, since: string): Promise<nu
     .from("sale_revenue")
     .upsert(rows, { onConflict: "shopify_order_id,shopify_line_item_id" });
   if (error) throw error;
+
+  // Frete cobrado — `cost` fica por conta do shipping-cost-callback.
+  const { error: shipError } = await supabase
+    .from("order_shipping")
+    .upsert(shipRows, { onConflict: "shopify_order_id" });
+  if (shipError) throw shipError;
 
   await ensureProductCostStubs(supabase, rows);
 

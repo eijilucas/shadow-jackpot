@@ -1,4 +1,5 @@
-import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { useSearchParams } from "react-router-dom";
 import { TopBar, AdminBackLink } from "../components/TopBar";
 import { SignOutButton } from "../components/RequireAuth";
 import { DateRangePicker } from "../components/DateRangePicker";
@@ -10,6 +11,13 @@ import {
   updateOverheadMethod,
   deleteOverhead,
   insertOverhead,
+  carryForwardFixedOverhead,
+  isHerdavel,
+  updateOverheadRecorrente,
+  propagateFixedOverheadAmount,
+  propagateFixedOverheadMethod,
+  markOverheadManuallyEdited,
+  deleteFixedOverheadForward,
   fetchFeeRates,
   updateFeeRates,
   fetchProductCosts,
@@ -27,7 +35,8 @@ import {
   type SaleMarginRow,
 } from "../lib/queries";
 
-type Tab = "sku" | "fees" | "overhead" | "profit" | "coupon" | "payment";
+type Tab = "sku" | "fees" | "overhead" | "frete" | "profit" | "coupon" | "payment";
+const TABS: Tab[] = ["sku", "fees", "overhead", "frete", "profit", "coupon", "payment"];
 type PieceMargin = { sku: string; units: number; netProfit: number; profitPerUnit: number; marginPct: number };
 
 function marginClass(pct: number) {
@@ -192,8 +201,88 @@ function ProductPanel({
   );
 }
 
+function PieceMarginTable({
+  title,
+  hint,
+  rows,
+  sort,
+  onSort,
+  emptyMessage,
+  isCostMissing,
+}: {
+  title: string;
+  hint: string;
+  rows: PieceMargin[];
+  sort: { field: keyof PieceMargin; dir: "asc" | "desc" };
+  onSort: (field: keyof PieceMargin) => void;
+  emptyMessage: string;
+  isCostMissing: (pieceName: string) => boolean;
+}) {
+  const sorted = [...rows].sort((a, b) => {
+    const dir = sort.dir === "asc" ? 1 : -1;
+    const field = sort.field;
+    if (field === "sku") return a.sku.localeCompare(b.sku) * dir;
+    return (a[field] - b[field]) * dir;
+  });
+  const arrow = (field: keyof PieceMargin) => (sort.field === field ? (sort.dir === "asc" ? " ▲" : " ▼") : "");
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <div>
+          <div className="panel-title">{title}</div>
+          <div className="panel-hint">{hint}</div>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th className="sortable" onClick={() => onSort("sku")}>Peça{arrow("sku")}</th>
+              <th className="num sortable" onClick={() => onSort("units")}>Unid.{arrow("units")}</th>
+              <th className="num sortable" onClick={() => onSort("netProfit")}>Lucro{arrow("netProfit")}</th>
+              <th className="num sortable" onClick={() => onSort("profitPerUnit")}>Lucro/un.{arrow("profitPerUnit")}</th>
+              <th className="num sortable" onClick={() => onSort("marginPct")}>Margem{arrow("marginPct")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.length === 0 ? (
+              <tr>
+                <td colSpan={5} style={{ color: "var(--ink-faint)" }}>{emptyMessage}</td>
+              </tr>
+            ) : (
+              sorted.map((row) => (
+                <tr key={row.sku}>
+                  <td className="sku">
+                    {row.sku}
+                    {isCostMissing(row.sku) && <span className="cost-missing">sem custo</span>}
+                  </td>
+                  <td className="num">{row.units}</td>
+                  <td className="num">R$ {money(row.netProfit)}</td>
+                  <td className="num">R$ {money(row.profitPerUnit)}</td>
+                  <td className="num">
+                    <span className={`margin-pill ${marginClass(row.marginPct)}`}>{row.marginPct.toFixed(1)}%</span>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export function Admin() {
-  const [tab, setTab] = useState<Tab>("overhead");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const tab: Tab = tabParam && (TABS as string[]).includes(tabParam) ? (tabParam as Tab) : "overhead";
+  function setTab(next: Tab) {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      params.set("tab", next);
+      return params;
+    }, { replace: true });
+  }
   const [overhead, setOverhead] = useState<OverheadRow[]>([]);
   const [feeRates, setFeeRates] = useState<FeeRatesRow | null>(null);
   const [productCosts, setProductCosts] = useState<ProductCostRow[]>([]);
@@ -204,7 +293,7 @@ export function Admin() {
   const [profitRangeEnd, setProfitRangeEnd] = useState(todayStr());
   const [couponRows, setCouponRows] = useState<SaleMarginRow[]>([]);
   const [overheadMonth, setOverheadMonth] = useState(currentMonthStart());
-  const [newMarketing, setNewMarketing] = useState({ category: "", amount: "0,00", method: "per_revenue" as OverheadRow["allocation_method"] });
+  const [newMarketing, setNewMarketing] = useState({ category: "", amount: "0,00", method: "per_revenue" as OverheadRow["allocation_method"], recorrente: false });
   const [newFixed, setNewFixed] = useState({ category: "", amount: "0,00", method: "per_unit" as OverheadRow["allocation_method"] });
   const [newProduct, setNewProduct] = useState<Omit<ProductCostRow, "id">>(() => emptyProductCost());
   const [error, setError] = useState<string | null>(null);
@@ -231,11 +320,21 @@ export function Admin() {
     };
   }, []);
 
+  const carriedForwardRef = useRef(false);
   useEffect(() => {
     let cancelled = false;
-    fetchMonthlyOverhead(overheadMonth).then((rows) => {
+    (async () => {
+      if (!carriedForwardRef.current) {
+        carriedForwardRef.current = true;
+        try {
+          await carryForwardFixedOverhead();
+        } catch {
+          // não fatal — se falhar, o mês só não herda os fixos automaticamente
+        }
+      }
+      const rows = await fetchMonthlyOverhead(overheadMonth);
       if (!cancelled) setOverhead(rows);
-    });
+    })();
     return () => {
       cancelled = true;
     };
@@ -264,26 +363,82 @@ export function Admin() {
   async function handleAmountBlur(id: string, value: string) {
     const parsed = parseMoney(value);
     if (parsed === null) return;
-    setOverhead((rows) => rows.map((r) => (r.id === id ? { ...r, amount: parsed } : r)));
+    const row = overhead.find((r) => r.id === id);
+    const herdavel = row ? isHerdavel(row) : false;
+    setOverhead((rows) => rows.map((r) => (r.id === id ? { ...r, amount: parsed, manually_edited: herdavel ? true : r.manually_edited } : r)));
     await updateOverheadAmount(id, parsed);
+    // Gasto herdável: marca esse mês como mexido na mão e propaga o valor novo
+    // pros meses seguintes que ainda estão herdando.
+    if (row && herdavel) {
+      await markOverheadManuallyEdited(id);
+      await propagateFixedOverheadAmount(row.category, row.month, parsed, row.is_marketing);
+    }
   }
 
   async function handleMethodChange(id: string, method: OverheadRow["allocation_method"]) {
-    setOverhead((rows) => rows.map((r) => (r.id === id ? { ...r, allocation_method: method } : r)));
+    const row = overhead.find((r) => r.id === id);
+    const herdavel = row ? isHerdavel(row) : false;
+    setOverhead((rows) => rows.map((r) => (r.id === id ? { ...r, allocation_method: method, manually_edited: herdavel ? true : r.manually_edited } : r)));
     await updateOverheadMethod(id, method);
+    if (row && herdavel) {
+      await markOverheadManuallyEdited(id);
+      await propagateFixedOverheadMethod(row.category, row.month, method, row.is_marketing);
+    }
   }
 
   async function handleDeleteOverhead(id: string) {
+    const row = overhead.find((r) => r.id === id);
     setOverhead((rows) => rows.filter((r) => r.id !== id));
-    await deleteOverhead(id);
+    if (row && isHerdavel(row)) {
+      // Gasto que se repete: apaga desse mês pra frente, o passado fica no
+      // histórico. Marketing pontual some só do mês dele.
+      await deleteFixedOverheadForward(row.category, row.month, row.is_marketing);
+    } else {
+      await deleteOverhead(id);
+    }
   }
 
   async function handleAddMarketing() {
     const amount = parseMoney(newMarketing.amount) ?? 0;
     if (!newMarketing.category.trim()) return;
-    const row = await insertOverhead({ category: newMarketing.category.trim(), amount, is_marketing: true, allocation_method: newMarketing.method, month: overheadMonth });
+    const row = await insertOverhead({
+      category: newMarketing.category.trim(),
+      amount,
+      is_marketing: true,
+      allocation_method: newMarketing.method,
+      month: overheadMonth,
+      recorrente: newMarketing.recorrente,
+      // Você digitou esse valor, então ele é o gasto do mês — não uma projeção
+      // herdada. Sem isso o rateio trataria como estimativa e cortaria pelos
+      // dias decorridos.
+      manually_edited: true,
+    });
     setOverhead((rows) => [...rows, row]);
-    setNewMarketing({ category: "", amount: "0,00", method: "per_revenue" });
+    const repetia = newMarketing.recorrente;
+    setNewMarketing({ category: "", amount: "0,00", method: "per_revenue", recorrente: false });
+    if (repetia) {
+      // Materializa nos meses seguintes que já existem (cadastro feito num mês
+      // passado precisa alcançar até o mês corrente).
+      try {
+        await carryForwardFixedOverhead();
+      } catch {
+        // herança é conveniência — falhar aqui não pode derrubar o cadastro
+      }
+    }
+  }
+
+  async function handleRecorrenteToggle(id: string, recorrente: boolean) {
+    setOverhead((rows) => rows.map((r) => (r.id === id ? { ...r, recorrente } : r)));
+    await updateOverheadRecorrente(id, recorrente);
+    // Desligar não precisa de limpeza: a herança só materializa até o mês
+    // corrente, então não existe cópia futura pra remover.
+    if (recorrente) {
+      try {
+        await carryForwardFixedOverhead();
+      } catch {
+        // idem
+      }
+    }
   }
 
   async function handleAddFixed() {
@@ -292,6 +447,12 @@ export function Admin() {
     const row = await insertOverhead({ category: newFixed.category.trim(), amount, is_marketing: false, allocation_method: newFixed.method, month: overheadMonth });
     setOverhead((rows) => [...rows, row]);
     setNewFixed({ category: "", amount: "0,00", method: "per_unit" });
+    // Herda o gasto novo pros meses seguintes que já existem.
+    try {
+      await carryForwardFixedOverhead();
+    } catch {
+      // não fatal
+    }
   }
 
   async function handleFeeRatesSave() {
@@ -301,9 +462,10 @@ export function Admin() {
       taxa_gateway_cartao_pct: feeRates.taxa_gateway_cartao_pct,
       taxa_gateway_pix_pct: feeRates.taxa_gateway_pix_pct,
       taxa_gateway_pix_fixo: feeRates.taxa_gateway_pix_fixo,
+      taxa_antifraude_fixo: feeRates.taxa_antifraude_fixo,
+      taxa_frete_estimado: feeRates.taxa_frete_estimado,
       imposto_pct: feeRates.imposto_pct,
       comissao_influencer_pct: feeRates.comissao_influencer_pct,
-      desconto_medio_pct: feeRates.desconto_medio_pct,
       sacolinha: feeRates.sacolinha,
       adesivo: feeRates.adesivo,
     });
@@ -361,6 +523,15 @@ export function Admin() {
     ? [[currentCollection.collection, productCosts.filter((p) => p.collection === currentCollection.collection)]]
     : [[null, productCosts.filter((p) => p.collection === null)]];
 
+  // Peça sem custo de produção cadastrado entra no ranking com margem
+  // fictícia (só sacolinha e adesivo contam como custo), então marca na
+  // tabela. Peça que nem tem linha em product_costs cai no mesmo caso —
+  // a venda casa por shopify_product_id e não achou nada.
+  const pieceCostTotals = new Map(
+    productCosts.map((p) => [p.product_name, p.tecido + p.estampa + p.costura + p.outros_acabamentos]),
+  );
+  const isCostMissing = (pieceName: string) => (pieceCostTotals.get(pieceName) ?? 0) === 0;
+
   if (!supabase) {
     return (
       <div className="app">
@@ -396,6 +567,10 @@ export function Admin() {
             <div className={`tab ${tab === "overhead" ? "active" : ""}`} onClick={() => setTab("overhead")}>
               Gastos do mês
               <span className="count">{monthLabel(overheadMonth)}</span>
+            </div>
+            <div className={`tab ${tab === "frete" ? "active" : ""}`} onClick={() => setTab("frete")}>
+              Frete
+              <span className="count">{rangeLabel(profitRangeStart, profitRangeEnd)}</span>
             </div>
             <div className={`tab ${tab === "profit" ? "active" : ""}`} onClick={() => setTab("profit")}>
               Lucro por peça
@@ -463,6 +638,7 @@ export function Admin() {
                         <th>Nome do gasto</th>
                         <th className="num" style={{ width: 120 }}>Valor</th>
                         <th style={{ width: 170 }}>Como dividir</th>
+                        <th style={{ width: 110 }}>Repete todo mês</th>
                         <th style={{ width: 40 }}></th>
                       </tr>
                     </thead>
@@ -492,6 +668,16 @@ export function Admin() {
                                 Variável
                               </button>
                             </div>
+                          </td>
+                          <td>
+                            <label className="check-cell" title="Herda pro mês seguinte com o mesmo valor, como um gasto fixo. Editar o valor propaga pros meses que ainda estão herdando.">
+                              <input
+                                type="checkbox"
+                                checked={row.recorrente}
+                                onChange={(e) => handleRecorrenteToggle(row.id, e.target.checked)}
+                              />
+                              <span>{row.recorrente ? "sim" : "não"}</span>
+                            </label>
                           </td>
                           <td>
                             <div className="icon-cell" onClick={() => handleDeleteOverhead(row.id)}>✕</div>
@@ -536,6 +722,16 @@ export function Admin() {
                           </div>
                         </td>
                         <td>
+                          <label className="check-cell" title="Marque para esse gasto se repetir automaticamente nos próximos meses.">
+                            <input
+                              type="checkbox"
+                              checked={newMarketing.recorrente}
+                              onChange={(e) => setNewMarketing((s) => ({ ...s, recorrente: e.target.checked }))}
+                            />
+                            <span>{newMarketing.recorrente ? "sim" : "não"}</span>
+                          </label>
+                        </td>
+                        <td>
                           <div className="icon-cell" onClick={handleAddMarketing}>+</div>
                         </td>
                       </tr>
@@ -550,6 +746,7 @@ export function Admin() {
                     <div className="panel-title">Fixos</div>
                     <div className="panel-hint">
                       Custos estruturais do negócio — plataforma, folha, contabilidade — que existem independente de quanto vendeu.
+                      Se repetem sozinhos todo mês. Editar o valor num mês vale desse mês pra frente (meses passados não mudam); apagar tira desse mês em diante.
                     </div>
                   </div>
                 </div>
@@ -643,6 +840,65 @@ export function Admin() {
             </>
           )}
 
+          {tab === "frete" && (() => {
+            const arrecadado = couponRows.reduce((s, r) => s + r.shipping_revenue, 0);
+            const usado = couponRows.reduce((s, r) => s + r.shipping_cost, 0);
+            const diferenca = couponRows.reduce((s, r) => s + r.shipping_adjustment, 0);
+            const saldo = arrecadado - usado - diferenca;
+            const pedidos = new Set(couponRows.map((r) => r.sale_id)).size;
+            // Pedido sem etiqueta comprada (ou cujo custo o sistema de etiquetas ainda
+            // não empurrou) entra com custo zero, porque taxa_frete_estimado
+            // está em 0 de propósito — a gente quer o valor real, não chute.
+            // Sem esse aviso o "Valor usado" parece completo e não é.
+            const semCustoReal = new Set(
+              couponRows.filter((r) => !r.has_real_shipping_cost).map((r) => r.sale_id),
+            ).size;
+            return (
+              <>
+                <div className="panel-head" style={{ padding: "0 0 16px" }}>
+                  <div>
+                    <div className="panel-title" style={{ marginBottom: 0 }}>Gastos de frete — {rangeLabel(profitRangeStart, profitRangeEnd)}</div>
+                  </div>
+                  <DateRangePicker
+                    start={profitRangeStart}
+                    end={profitRangeEnd}
+                    maxDate={todayStr()}
+                    onChange={(s, e) => { setProfitRangeStart(s); setProfitRangeEnd(e); }}
+                  />
+                </div>
+                <div className="allocation-summary">
+                  <div className="as-cell">
+                    <div className="as-label">Valor arrecadado</div>
+                    <div className="as-value accent">R$ {money(arrecadado)}</div>
+                  </div>
+                  <div className="as-cell">
+                    <div className="as-label">Valor usado</div>
+                    <div className="as-value">R$ {money(usado)}</div>
+                  </div>
+                  <div className="as-cell">
+                    <div className="as-label">Diferença</div>
+                    <div className="as-value" style={{ color: diferenca > 0 ? "var(--negative)" : undefined }}>R$ {money(diferenca)}</div>
+                  </div>
+                  <div className="as-cell">
+                    <div className="as-label">Saldo final</div>
+                    <div className="as-value" style={{ color: saldo >= 0 ? "var(--positive)" : "var(--negative)" }}>
+                      R$ {money(saldo)}
+                    </div>
+                  </div>
+                </div>
+                <p className="page-sub" style={{ marginTop: 12 }}>
+                  {pedidos} pedido{pedidos === 1 ? "" : "s"} no período.
+                </p>
+                {semCustoReal > 0 && (
+                  <p className="page-sub" style={{ marginTop: 4, color: "var(--negative)" }}>
+                    {semCustoReal} desses {semCustoReal === 1 ? "está" : "estão"} sem o custo real da etiqueta —
+                    {" "}{semCustoReal === 1 ? "entrou" : "entraram"} pagando R$ 0,00, então "Valor usado" e "Saldo final" estão otimistas.
+                  </p>
+                )}
+              </>
+            );
+          })()}
+
           {tab === "fees" && feeRates && (
             <div className="panel">
               <div className="panel-head">
@@ -696,6 +952,28 @@ export function Admin() {
                     }}
                   />
                   <div className="suffix">custo fixo por pedido pago via Pix</div>
+                </div>
+                <div className="field">
+                  <label>Taxa antifraude (cartão)</label>
+                  <input
+                    defaultValue={money(feeRates.taxa_antifraude_fixo)}
+                    onBlur={(e) => {
+                      const v = parseMoney(e.target.value);
+                      if (v !== null) setFeeRates({ ...feeRates, taxa_antifraude_fixo: v });
+                    }}
+                  />
+                  <div className="suffix">custo fixo por pedido aprovado no cartão (Pix não tem)</div>
+                </div>
+                <div className="field">
+                  <label>Frete — custo estimado</label>
+                  <input
+                    defaultValue={money(feeRates.taxa_frete_estimado)}
+                    onBlur={(e) => {
+                      const v = parseMoney(e.target.value);
+                      if (v !== null) setFeeRates({ ...feeRates, taxa_frete_estimado: v });
+                    }}
+                  />
+                  <div className="suffix">usado só enquanto o sistema de etiquetas não informa o frete real do pedido</div>
                 </div>
                 <div className="field">
                   <label>Imposto (Simples)</label>
@@ -765,11 +1043,14 @@ export function Admin() {
           )}
 
           {tab === "profit" && (
-            <div className="panel">
-              <div className="panel-head">
+            <>
+              <div className="panel-head" style={{ padding: "0 0 16px" }}>
                 <div>
-                  <div className="panel-title">Lucro por peça — {rangeLabel(profitRangeStart, profitRangeEnd)}</div>
-                  <div className="panel-hint">Peças vendidas no período — clique no cabeçalho pra ordenar.</div>
+                  <div className="panel-title" style={{ marginBottom: 0 }}>Lucro por peça — {rangeLabel(profitRangeStart, profitRangeEnd)}</div>
+                  <div className="panel-hint">
+                    Peças vendidas no período — clique no cabeçalho pra ordenar. O lucro aqui é o líquido:
+                    já desconta custo da peça, taxas de venda, marketing e fixos rateados e o resultado do frete.
+                  </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <DateRangePicker
@@ -787,62 +1068,16 @@ export function Admin() {
                   />
                 </div>
               </div>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th className="sortable" onClick={() => handlePieceSort("sku")}>
-                        Peça{pieceSort.field === "sku" ? (pieceSort.dir === "asc" ? " ▲" : " ▼") : ""}
-                      </th>
-                      <th className="num sortable" onClick={() => handlePieceSort("units")}>
-                        Unid.{pieceSort.field === "units" ? (pieceSort.dir === "asc" ? " ▲" : " ▼") : ""}
-                      </th>
-                      <th className="num sortable" onClick={() => handlePieceSort("netProfit")}>
-                        Lucro{pieceSort.field === "netProfit" ? (pieceSort.dir === "asc" ? " ▲" : " ▼") : ""}
-                      </th>
-                      <th className="num sortable" onClick={() => handlePieceSort("profitPerUnit")}>
-                        Lucro/un.{pieceSort.field === "profitPerUnit" ? (pieceSort.dir === "asc" ? " ▲" : " ▼") : ""}
-                      </th>
-                      <th className="num sortable" onClick={() => handlePieceSort("marginPct")}>
-                        Margem{pieceSort.field === "marginPct" ? (pieceSort.dir === "asc" ? " ▲" : " ▼") : ""}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(() => {
-                      const filtered = pieceMargin
-                        .filter((row) => row.sku.toLowerCase().includes(pieceSearch.trim().toLowerCase()))
-                        .sort((a, b) => {
-                          const dir = pieceSort.dir === "asc" ? 1 : -1;
-                          const field = pieceSort.field;
-                          if (field === "sku") return a.sku.localeCompare(b.sku) * dir;
-                          return (a[field] - b[field]) * dir;
-                        });
-                      if (filtered.length === 0) {
-                        return (
-                          <tr>
-                            <td colSpan={5} style={{ color: "var(--ink-faint)" }}>
-                              {pieceMargin.length === 0 ? "Nenhuma venda ainda esse mês." : "Nenhuma peça encontrada."}
-                            </td>
-                          </tr>
-                        );
-                      }
-                      return filtered.map((row) => (
-                        <tr key={row.sku}>
-                          <td className="sku">{row.sku}</td>
-                          <td className="num">{row.units}</td>
-                          <td className="num">R$ {money(row.netProfit)}</td>
-                          <td className="num">R$ {money(row.profitPerUnit)}</td>
-                          <td className="num">
-                            <span className={`margin-pill ${marginClass(row.marginPct)}`}>{row.marginPct.toFixed(1)}%</span>
-                          </td>
-                        </tr>
-                      ));
-                    })()}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+              <PieceMarginTable
+                title="Lucro por peça"
+                hint="Todas as peças com venda no período."
+                rows={pieceMargin.filter((row) => row.sku.toLowerCase().includes(pieceSearch.trim().toLowerCase()))}
+                sort={pieceSort}
+                onSort={handlePieceSort}
+                emptyMessage={pieceMargin.length === 0 ? "Nenhuma venda ainda esse mês." : "Nenhuma peça encontrada."}
+                isCostMissing={isCostMissing}
+              />
+            </>
           )}
 
           {tab === "profit" && (() => {
@@ -854,7 +1089,7 @@ export function Admin() {
                 !excluded.some((re) => re.test(p.product_name)) &&
                 // drop antigo não é anomalia — só interessa peça sem venda
                 // do drop atual (ou sem coleção, se não tiver drop atual).
-                p.collection === currentCollection?.collection,
+                p.collection === (currentCollection?.collection ?? null),
             );
             return (
               <div className="panel" style={{ marginTop: 16 }}>
@@ -862,7 +1097,7 @@ export function Admin() {
                   <div>
                     <div className="panel-title">Sem venda no período</div>
                     <div className="panel-hint">
-                      Peças cadastradas mas sem nenhuma venda em {rangeLabel(profitRangeStart, profitRangeEnd)}. Preenche um preço de venda planejado pra ver o lucro estimado — é só projeção (taxa de cartão, sem rateio de marketing/fixo), não lucro real até vender de verdade.
+                      Peças cadastradas mas sem nenhuma venda em {rangeLabel(profitRangeStart, profitRangeEnd)}. Preenche um preço de venda planejado pra ver o lucro estimado — é projeção no pior caso (cartão e com cupom, sem rateio de marketing/fixo), não lucro real até vender de verdade.
                     </div>
                   </div>
                 </div>
@@ -889,7 +1124,7 @@ export function Admin() {
                           const preco = p.preco_venda;
                           const saleCostPct = feeRates
                             ? feeRates.taxa_shopify_pct + feeRates.taxa_gateway_cartao_pct + feeRates.imposto_pct
-                              + feeRates.comissao_influencer_pct + feeRates.desconto_medio_pct
+                              + feeRates.comissao_influencer_pct
                             : 0;
                           const estimatedProfit = preco !== null ? preco - directCost - preco * saleCostPct : null;
                           const estimatedMarginPct = preco !== null && preco > 0 ? (estimatedProfit! / preco) * 100 : null;

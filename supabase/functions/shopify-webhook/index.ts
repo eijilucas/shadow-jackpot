@@ -52,19 +52,48 @@ interface ShopifyLineItem {
   name?: string;
   quantity: number;
   price: string;
+  total_discount?: string | null;
+  discount_allocations?: { amount: string }[];
 }
 
 interface ShopifyDiscountCode {
   code: string;
 }
 
+interface ShopifyMoneySet {
+  shop_money?: { amount?: string };
+}
+
 interface ShopifyOrder {
   id: number;
+  order_number?: number;
   processed_at?: string;
   created_at: string;
   line_items: ShopifyLineItem[];
   discount_codes?: ShopifyDiscountCode[];
   payment_gateway_names?: string[];
+  total_shipping_price_set?: ShopifyMoneySet;
+  shipping_lines?: { price?: string }[];
+}
+
+// Frete cobrado do cliente no checkout. Prefere total_shipping_price_set (já
+// com desconto de frete aplicado); cai pra soma das shipping_lines se a loja
+// não mandar o set.
+function shippingRevenue(order: ShopifyOrder): number {
+  const fromSet = Number(order.total_shipping_price_set?.shop_money?.amount);
+  if (Number.isFinite(fromSet)) return fromSet;
+  return (order.shipping_lines ?? []).reduce((sum, l) => sum + (Number(l.price) || 0), 0);
+}
+
+// Desconto real do item: `price` da Shopify é sempre o preço de tabela, o
+// cupom entra à parte. Cupom aplicado no pedido inteiro chega rateado em
+// discount_allocations; desconto direto na linha vem em total_discount.
+// Os dois juntos nunca aparecem preenchidos pro mesmo desconto, então
+// preferimos o rateio quando existe pra não contar duas vezes.
+function lineDiscount(item: ShopifyLineItem): number {
+  const allocated = (item.discount_allocations ?? []).reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+  if (allocated > 0) return allocated;
+  return Number(item.total_discount) || 0;
 }
 
 interface ShopifyRefundLineItem {
@@ -102,6 +131,7 @@ async function handleOrderPaid(supabase: SupabaseClient, order: ShopifyOrder) {
       product_name: item.variant_title ? `${item.title} - ${item.variant_title}` : (item.title ?? item.name ?? "Sem nome"),
       quantity: item.quantity,
       gross_amount: Number(item.price) * item.quantity,
+      discount_amount: lineDiscount(item),
       sale_date: order.processed_at ?? order.created_at,
       has_coupon: hasCoupon,
       payment_method: paymentMethod,
@@ -113,6 +143,19 @@ async function handleOrderPaid(supabase: SupabaseClient, order: ShopifyOrder) {
     .from("sale_revenue")
     .upsert(rows, { onConflict: "shopify_order_id,shopify_line_item_id" });
   if (error) throw error;
+
+  // Frete cobrado do pedido — a coluna `cost` (frete real pago) é preenchida
+  // separado pelo shipping-cost-callback, por isso não vai no payload aqui.
+  const { error: shipError } = await supabase.from("order_shipping").upsert(
+    {
+      shopify_order_id: order.id,
+      order_number: order.order_number != null ? String(order.order_number) : null,
+      revenue: shippingRevenue(order),
+      revenue_synced_at: new Date().toISOString(),
+    },
+    { onConflict: "shopify_order_id" },
+  );
+  if (shipError) throw shipError;
 
   await ensureProductCostStubs(
     supabase,
@@ -160,6 +203,8 @@ async function ensureProductCostStubs(
 async function handleOrderCancelled(supabase: SupabaseClient, order: { id: number }) {
   const { error } = await supabase.from("sale_revenue").delete().eq("shopify_order_id", order.id);
   if (error) throw error;
+  const { error: shipError } = await supabase.from("order_shipping").delete().eq("shopify_order_id", order.id);
+  if (shipError) throw shipError;
 }
 
 async function handleRefundCreate(supabase: SupabaseClient, refund: ShopifyRefund) {
@@ -168,7 +213,7 @@ async function handleRefundCreate(supabase: SupabaseClient, refund: ShopifyRefun
 
     const { data: existing, error: fetchError } = await supabase
       .from("sale_revenue")
-      .select("quantity, gross_amount")
+      .select("quantity, gross_amount, discount_amount")
       .eq("shopify_order_id", refund.order_id)
       .eq("shopify_line_item_id", item.line_item_id)
       .maybeSingle();
@@ -177,6 +222,11 @@ async function handleRefundCreate(supabase: SupabaseClient, refund: ShopifyRefun
 
     const newQuantity = Math.max(0, existing.quantity - item.quantity);
     const newGross = Math.max(0, Number(existing.gross_amount) - unitPrice * item.quantity);
+    // O desconto acompanha as unidades que sobraram — devolveu metade das
+    // peças, devolveu metade do cupom junto.
+    const newDiscount = existing.quantity > 0
+      ? (Number(existing.discount_amount) || 0) * (newQuantity / existing.quantity)
+      : 0;
 
     if (newQuantity === 0) {
       const { error } = await supabase
@@ -188,7 +238,7 @@ async function handleRefundCreate(supabase: SupabaseClient, refund: ShopifyRefun
     } else {
       const { error } = await supabase
         .from("sale_revenue")
-        .update({ quantity: newQuantity, gross_amount: newGross })
+        .update({ quantity: newQuantity, gross_amount: newGross, discount_amount: Number(newDiscount.toFixed(2)) })
         .eq("shopify_order_id", refund.order_id)
         .eq("shopify_line_item_id", item.line_item_id);
       if (error) throw error;

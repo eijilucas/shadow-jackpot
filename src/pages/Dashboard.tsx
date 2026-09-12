@@ -100,7 +100,11 @@ export function Dashboard() {
   }
 
   const { dre, prevDre, lastSync } = data;
-  const totalCost = dre.direct_cost + dre.sale_cost + dre.marketing_cost + dre.fixed_cost;
+  // Tem que fechar com o lucro líquido: faturamento − custos totais = lucro.
+  // Inclui a diferença de frete (conferência da transportadora), senão a conta
+  // não bate com o net_profit da view.
+  const totalCost = dre.direct_cost + dre.sale_cost + dre.marketing_cost + dre.fixed_cost
+    + dre.shipping_cost + dre.shipping_adjustment - dre.shipping_revenue;
   const netMarginPct = dre.gross_revenue > 0 ? (dre.net_profit / dre.gross_revenue) * 100 : 0;
   const grossDeltaPct = prevDre && prevDre.gross_revenue > 0 ? ((dre.gross_revenue - prevDre.gross_revenue) / prevDre.gross_revenue) * 100 : null;
 
@@ -154,6 +158,9 @@ export function Dashboard() {
         </div>
       </div>
 
+      {/* Uma loja só: não existe quebra por linha de produto como no projeto
+          irmão (Mental Madness, que tem duas lojas Shopify). O recorte por
+          cupom e por forma de pagamento fica no Admin. */}
       <DreWaterfall title="DRE do período" hint="faturamento → lucro líquido" dre={dre} />
     </div>
   );

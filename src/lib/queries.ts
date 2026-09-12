@@ -5,11 +5,19 @@ export interface SaleMarginRow {
   product_sku: string | null;
   product_name: string;
   quantity: number;
+  // Líquido de cupom — a view já subtrai o desconto do preço de tabela.
   gross_amount: number;
+  discount_amount: number;
   direct_cost: number;
   sale_cost: number;
   marketing_cost: number;
   fixed_cost: number;
+  shipping_revenue: number;
+  shipping_cost: number;
+  shipping_adjustment: number;
+  // false = a etiqueta desse pedido ainda não teve o custo empurrado pelo
+  // sistema de etiquetas, então shipping_cost caiu no fallback estimado.
+  has_real_shipping_cost: boolean;
   net_profit: number;
   sale_date: string;
   piece_name: string;
@@ -20,10 +28,14 @@ export interface SaleMarginRow {
 export interface MonthlyDreRow {
   month: string;
   gross_revenue: number;
+  discount_amount: number;
   direct_cost: number;
   sale_cost: number;
   marketing_cost: number;
   fixed_cost: number;
+  shipping_revenue: number;
+  shipping_cost: number;
+  shipping_adjustment: number;
   net_profit: number;
 }
 
@@ -34,6 +46,16 @@ export interface OverheadRow {
   amount: number;
   is_marketing: boolean;
   allocation_method: "per_unit" | "per_revenue";
+  manually_edited: boolean;
+  // Só vale pra marketing: ligado, a linha é herdada pelos meses seguintes
+  // igual a um gasto fixo. Gasto fixo é sempre herdado, ignora esta flag.
+  recorrente: boolean;
+}
+
+// Gasto que se repete no mês seguinte — fixo sempre, marketing só quando
+// marcado. É o que decide se editar/apagar propaga pra frente.
+export function isHerdavel(row: Pick<OverheadRow, "is_marketing" | "recorrente">): boolean {
+  return !row.is_marketing || row.recorrente;
 }
 
 export interface FeeRatesRow {
@@ -42,9 +64,10 @@ export interface FeeRatesRow {
   taxa_gateway_cartao_pct: number;
   taxa_gateway_pix_pct: number;
   taxa_gateway_pix_fixo: number;
+  taxa_antifraude_fixo: number;
+  taxa_frete_estimado: number;
   imposto_pct: number;
   comissao_influencer_pct: number;
-  desconto_medio_pct: number;
   sacolinha: number;
   adesivo: number;
 }
@@ -114,10 +137,15 @@ export async function fetchSkuMarginForRange(start: string, end: string) {
   const rows = await fetchSaleMarginForRange(start, end);
 
   // Mesma exclusão aplicada na criação automática de custo (gift card)
-  // — não é peça de roupa, não faz sentido no ranking de margem por
-  // peça, mesmo que a venda em si continue registrada.
+  // — não é peça de roupa, não faz sentido no ranking de margem por peça,
+  // mesmo que a venda em si continue registrada.
   const excluded = [/gift\s*card/i];
 
+  // Lucro por peça é o lucro líquido de verdade: já vem da view com custo da
+  // peça, taxas de venda, marketing e fixo rateados e o resultado do frete.
+  // Chegou a ficar só como "faturamento − custo da peça" por um tempo, mas
+  // aquilo dava margem de 80% e era lido como margem real — voltou a ser a
+  // conta completa, a mesma que o Dashboard mostra.
   const bySku = new Map<string, { sku: string; units: number; grossAmount: number; netProfit: number }>();
   for (const row of rows) {
     if (excluded.some((re) => re.test(row.piece_name))) continue;
@@ -152,12 +180,82 @@ export async function fetchLastSyncTime() {
 export async function fetchMonthlyOverhead(month = currentMonthStart()) {
   const { data, error } = await db()
     .from("monthly_overhead")
-    .select("id, month, category, amount, is_marketing, allocation_method")
+    .select("id, month, category, amount, is_marketing, allocation_method, manually_edited, recorrente")
     .eq("month", month)
     .order("is_marketing", { ascending: false })
     .returns<OverheadRow[]>();
   if (error) throw error;
   return data ?? [];
+}
+
+// Materializa os gastos fixos herdados nos meses que ainda não têm.
+// Idempotente — pode chamar sempre.
+export async function carryForwardFixedOverhead() {
+  const { error } = await db().rpc("carry_forward_fixed_overhead");
+  if (error) throw error;
+}
+
+// Editou um gasto herdável num mês → propaga o valor novo pros meses
+// seguintes que ainda não foram mexidos na mão. Meses anteriores ficam.
+// `isMarketing` mantém os dois baldes separados: "Tráfego pago" de marketing
+// não propaga em cima de um fixo de mesmo nome.
+export async function propagateFixedOverheadAmount(
+  category: string,
+  fromMonth: string,
+  amount: number,
+  isMarketing = false,
+) {
+  const { error } = await db()
+    .from("monthly_overhead")
+    .update({ amount, updated_at: new Date().toISOString() })
+    .eq("is_marketing", isMarketing)
+    .eq("category", category)
+    .eq("manually_edited", false)
+    .gt("month", fromMonth);
+  if (error) throw error;
+}
+
+export async function propagateFixedOverheadMethod(
+  category: string,
+  fromMonth: string,
+  allocation_method: OverheadRow["allocation_method"],
+  isMarketing = false,
+) {
+  const { error } = await db()
+    .from("monthly_overhead")
+    .update({ allocation_method, updated_at: new Date().toISOString() })
+    .eq("is_marketing", isMarketing)
+    .eq("category", category)
+    .eq("manually_edited", false)
+    .gt("month", fromMonth);
+  if (error) throw error;
+}
+
+export async function markOverheadManuallyEdited(id: string) {
+  const { error } = await db().from("monthly_overhead").update({ manually_edited: true }).eq("id", id);
+  if (error) throw error;
+}
+
+// Apaga um gasto herdável desse mês pra frente (o passado fica no histórico).
+export async function deleteFixedOverheadForward(category: string, fromMonth: string, isMarketing = false) {
+  const { error } = await db()
+    .from("monthly_overhead")
+    .delete()
+    .eq("is_marketing", isMarketing)
+    .eq("category", category)
+    .gte("month", fromMonth);
+  if (error) throw error;
+}
+
+// Liga/desliga a repetição mensal de um gasto de marketing. Ligar propaga a
+// marcação pros meses seguintes que herdarem; desligar só afeta daqui pra
+// frente — mês já fechado não muda.
+export async function updateOverheadRecorrente(id: string, recorrente: boolean) {
+  const { error } = await db()
+    .from("monthly_overhead")
+    .update({ recorrente, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw error;
 }
 
 export async function updateOverheadAmount(id: string, amount: number) {
@@ -181,11 +279,15 @@ export async function insertOverhead(row: {
   is_marketing: boolean;
   allocation_method: OverheadRow["allocation_method"];
   month?: string;
+  recorrente?: boolean;
+  // Marketing digitado na mão já é gasto realizado — nasce marcado, pra não
+  // ser confundido com valor herdado e entrar rateado pelos dias do mês.
+  manually_edited?: boolean;
 }) {
   const { data, error } = await db()
     .from("monthly_overhead")
     .insert({ ...row, month: row.month ?? currentMonthStart() })
-    .select("id, month, category, amount, is_marketing, allocation_method")
+    .select("id, month, category, amount, is_marketing, allocation_method, manually_edited, recorrente")
     .single<OverheadRow>();
   if (error) throw error;
   return data;

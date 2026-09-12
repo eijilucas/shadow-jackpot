@@ -128,7 +128,8 @@ h1.page-title {
 .page-sub b { color: var(--ink); font-weight: 600; }
 
 /* ---- Tabs (admin) ---- */
-.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border-strong); margin-bottom: 28px; overflow-x: auto; overflow-y: hidden; }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border-strong); margin-bottom: 28px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -ms-overflow-style: none; }
+.tabs::-webkit-scrollbar { display: none; }
 .tab {
   font-family: var(--font-body);
   font-size: 12px;
@@ -173,7 +174,7 @@ h1.page-title {
 /* ---- Allocation summary (admin) ---- */
 .allocation-summary {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 16px;
   margin-bottom: 28px;
 }
@@ -412,6 +413,14 @@ td.sku .sku-id { display: block; font-family: var(--font-body); font-size: 11px;
 .margin-pill.good { color: var(--positive); border-color: var(--positive); }
 .margin-pill.mid { color: var(--ink-faint); border-color: var(--border-strong); }
 .margin-pill.low { color: var(--negative); border-color: var(--negative); }
+
+/* "Repete todo mês" nos gastos de marketing. */
+.check-cell { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-family: var(--font-body); font-size: 12px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.06em; }
+.check-cell input { accent-color: var(--accent); cursor: pointer; }
+
+/* Peça que aparece no ranking sem custo de produção cadastrado — a margem
+   dela é fictícia (só embalagem entra como custo), então avisa na tabela. */
+.cost-missing { display: inline-block; margin-left: 8px; font-family: var(--font-body); font-size: 10px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 6px; color: var(--negative); border: 1px solid var(--negative); }
 
 /* ---- Method toggle (por peça / por venda) ---- */
 .method-toggle { display: inline-flex; border: 1px solid var(--border-strong); }
