@@ -372,3 +372,63 @@ export async function insertProductCost(row: Omit<ProductCostRow, "id">) {
   if (error) throw error;
   return data;
 }
+
+export interface MelhorEnvioShipmentRow {
+  id: string;
+  melhor_envio_id: string;
+  protocol: string | null;
+  status: string;
+  price: number | null;
+  recipient_name: string | null;
+  recipient_zipcode: string | null;
+  tracking_code: string | null;
+  event_received_at: string;
+  matched_shopify_order_id: number | null;
+}
+
+// Etiquetas que chegaram pelo webhook do Melhor Envio e ainda não foram
+// ligadas a um pedido Shopify — o Melhor Envio não guarda referência
+// externa, então o admin confirma na mão (CEP/nome/data).
+export async function fetchUnmatchedShipments() {
+  const { data, error } = await db()
+    .from("melhor_envio_shipments")
+    .select("id, melhor_envio_id, protocol, status, price, recipient_name, recipient_zipcode, tracking_code, event_received_at, matched_shopify_order_id")
+    .is("matched_shopify_order_id", null)
+    .order("event_received_at", { ascending: false })
+    .returns<MelhorEnvioShipmentRow[]>();
+  if (error) throw error;
+  return data ?? [];
+}
+
+// Liga a etiqueta ao pedido (pelo número, o mesmo "#1451" que aparece na
+// Shopify) e empurra o preço real pra order_shipping.cost — é isso que a
+// view sale_margin usa como shipping_cost.
+export async function matchShipmentToOrder(shipmentId: string, orderNumber: string) {
+  const { data: order, error: findError } = await db()
+    .from("order_shipping")
+    .select("shopify_order_id")
+    .eq("order_number", orderNumber.replace(/^#/, "").trim())
+    .maybeSingle<{ shopify_order_id: number }>();
+  if (findError) throw findError;
+  if (!order) throw new Error(`Pedido #${orderNumber} não encontrado.`);
+
+  const { data: shipment, error: shipmentError } = await db()
+    .from("melhor_envio_shipments")
+    .select("price")
+    .eq("id", shipmentId)
+    .single<{ price: number | null }>();
+  if (shipmentError) throw shipmentError;
+
+  const now = new Date().toISOString();
+  const { error: costError } = await db()
+    .from("order_shipping")
+    .update({ cost: shipment.price, cost_synced_at: now })
+    .eq("shopify_order_id", order.shopify_order_id);
+  if (costError) throw costError;
+
+  const { error: matchError } = await db()
+    .from("melhor_envio_shipments")
+    .update({ matched_shopify_order_id: order.shopify_order_id, matched_at: now })
+    .eq("id", shipmentId);
+  if (matchError) throw matchError;
+}

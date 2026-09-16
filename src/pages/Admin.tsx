@@ -28,12 +28,15 @@ import {
   insertProductCost,
   fetchSkuMarginForRange,
   fetchSaleMarginForRange,
+  fetchUnmatchedShipments,
+  matchShipmentToOrder,
   currentMonthStart,
   todayStr,
   type OverheadRow,
   type FeeRatesRow,
   type ProductCostRow,
   type SaleMarginRow,
+  type MelhorEnvioShipmentRow,
 } from "../lib/queries";
 
 type Tab = "sku" | "fees" | "overhead" | "frete" | "profit" | "coupon" | "payment";
@@ -297,10 +300,33 @@ export function Admin() {
   const [profitRangeStart, setProfitRangeStart] = useState(currentMonthStart());
   const [profitRangeEnd, setProfitRangeEnd] = useState(todayStr());
   const [earliestDate, setEarliestDate] = useState<string | undefined>(undefined);
+  const [pendingShipments, setPendingShipments] = useState<MelhorEnvioShipmentRow[]>([]);
+  const [shipmentOrderInputs, setShipmentOrderInputs] = useState<Record<string, string>>({});
+  const [shipmentError, setShipmentError] = useState<Record<string, string>>({});
 
   useEffect(() => {
     fetchEarliestSaleDate().then((d) => setEarliestDate(d?.slice(0, 10))).catch(() => {});
   }, []);
+
+  function reloadPendingShipments() {
+    fetchUnmatchedShipments().then(setPendingShipments).catch(() => {});
+  }
+
+  useEffect(() => {
+    reloadPendingShipments();
+  }, []);
+
+  async function handleMatchShipment(shipmentId: string) {
+    const orderNumber = (shipmentOrderInputs[shipmentId] ?? "").trim();
+    if (!orderNumber) return;
+    setShipmentError((e) => ({ ...e, [shipmentId]: "" }));
+    try {
+      await matchShipmentToOrder(shipmentId, orderNumber);
+      setPendingShipments((rows) => rows.filter((r) => r.id !== shipmentId));
+    } catch (e) {
+      setShipmentError((err) => ({ ...err, [shipmentId]: e instanceof Error ? e.message : "Erro ao confirmar." }));
+    }
+  }
   const [couponRows, setCouponRows] = useState<SaleMarginRow[]>([]);
   const [overheadMonth, setOverheadMonth] = useState(currentMonthStart());
   const [newMarketing, setNewMarketing] = useState({ category: "", amount: "0,00", method: "per_revenue" as OverheadRow["allocation_method"], recorrente: false });
@@ -927,6 +953,69 @@ export function Admin() {
                     {" "}{semCustoReal === 1 ? "entrou" : "entraram"} pagando R$ 0,00, então "Valor usado" e "Saldo final" estão otimistas.
                   </p>
                 )}
+
+                <div className="panel" style={{ marginTop: 16 }}>
+                  <div className="panel-head">
+                    <div>
+                      <div className="panel-title">Etiquetas do Melhor Envio — conferência</div>
+                      <div className="panel-hint">
+                        O Melhor Envio não guarda o pedido Shopify na etiqueta — confirma pelo CEP/nome/data
+                        qual pedido é cada uma. Depois de confirmado, o custo real vai pra esse pedido e some
+                        dessa lista.
+                      </div>
+                    </div>
+                  </div>
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Recebida em</th>
+                          <th>Destinatário</th>
+                          <th>CEP</th>
+                          <th className="num">Preço</th>
+                          <th>Status</th>
+                          <th>Nº do pedido</th>
+                          <th style={{ width: 100 }}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pendingShipments.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} style={{ color: "var(--ink-faint)" }}>Nenhuma etiqueta pendente de conferência.</td>
+                          </tr>
+                        ) : (
+                          pendingShipments.map((s) => (
+                            <tr key={s.id}>
+                              <td>{new Date(s.event_received_at).toLocaleString("pt-BR")}</td>
+                              <td>{s.recipient_name ?? "—"}</td>
+                              <td>{s.recipient_zipcode ?? "—"}</td>
+                              <td className="num">{s.price !== null ? `R$ ${money(s.price)}` : "—"}</td>
+                              <td>{s.status}</td>
+                              <td>
+                                <input
+                                  className="cell-text"
+                                  placeholder="#1451"
+                                  style={{ width: 90 }}
+                                  value={shipmentOrderInputs[s.id] ?? ""}
+                                  onChange={(e) => setShipmentOrderInputs((v) => ({ ...v, [s.id]: e.target.value }))}
+                                  onKeyDown={(e) => { if (e.key === "Enter") handleMatchShipment(s.id); }}
+                                />
+                                {shipmentError[s.id] && (
+                                  <div style={{ fontSize: 11, color: "var(--negative)", marginTop: 4 }}>{shipmentError[s.id]}</div>
+                                )}
+                              </td>
+                              <td>
+                                <button type="button" className="btn btn-ghost" onClick={() => handleMatchShipment(s.id)}>
+                                  Confirmar
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               </>
             );
           })()}
