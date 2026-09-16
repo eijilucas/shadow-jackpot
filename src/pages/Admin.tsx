@@ -85,6 +85,9 @@ function emptyProductCost(collection: string | null = null): Omit<ProductCostRow
     estampa: 0,
     costura: 0,
     outros_acabamentos: 0,
+    fotolito: 0,
+    gravacao_tela: 0,
+    corte: 0,
     collection,
     collection_published_at: null,
     preco_venda: null,
@@ -110,7 +113,7 @@ function ProductPanel({
   onDelete: (id: string) => void;
   onAdd: () => void;
 }) {
-  const costFields = ["tecido", "estampa", "costura", "outros_acabamentos"] as const;
+  const costFields = ["tecido", "estampa", "costura", "outros_acabamentos", "fotolito", "gravacao_tela", "corte"] as const;
   const newTotal = costFields.reduce((sum, f) => sum + newProduct[f], 0);
 
   return (
@@ -120,7 +123,6 @@ function ProductPanel({
           <div className="panel-title">{title}</div>
           <div className="panel-hint">
             A soma das colunas é o quanto custa produzir a peça — é isso que sai da venda antes de qualquer outra coisa.
-            Sacolinha e adesivo custam o mesmo pra toda peça, então ficaram na aba "Taxas de venda".
           </div>
         </div>
       </div>
@@ -133,13 +135,16 @@ function ProductPanel({
               <th className="num">Estampa</th>
               <th className="num">Costura</th>
               <th className="num">Outros</th>
+              <th className="num">Fotolito</th>
+              <th className="num">Gravação de tela</th>
+              <th className="num">Corte</th>
               <th className="num">Total</th>
               <th style={{ width: 40 }}></th>
             </tr>
           </thead>
           <tbody>
             {products.map((p) => {
-              const total = p.tecido + p.estampa + p.costura + p.outros_acabamentos;
+              const total = p.tecido + p.estampa + p.costura + p.outros_acabamentos + p.fotolito + p.gravacao_tela + p.corte;
               return (
                 <tr key={p.id}>
                   <td className="sku">
@@ -544,12 +549,12 @@ export function Admin() {
       : []),
   ];
 
-  // Peça sem custo de produção cadastrado entra no ranking com margem
-  // fictícia (só sacolinha e adesivo contam como custo), então marca na
-  // tabela. Peça que nem tem linha em product_costs cai no mesmo caso —
-  // a venda casa por shopify_product_id e não achou nada.
+  // Peça sem custo de produção cadastrado entra no ranking com margem de
+  // 100% (nenhuma coluna de custo preenchida), então marca na tabela. Peça
+  // que nem tem linha em product_costs cai no mesmo caso — a venda casa
+  // por shopify_product_id e não achou nada.
   const pieceCostTotals = new Map(
-    productCosts.map((p) => [p.product_name, p.tecido + p.estampa + p.costura + p.outros_acabamentos]),
+    productCosts.map((p) => [p.product_name, p.tecido + p.estampa + p.costura + p.outros_acabamentos + p.fotolito + p.gravacao_tela + p.corte]),
   );
   const isCostMissing = (pieceName: string) => (pieceCostTotals.get(pieceName) ?? 0) === 0;
 
@@ -996,49 +1001,6 @@ export function Admin() {
                   />
                   <div className="suffix">usado só enquanto o sistema de etiquetas não informa o frete real do pedido</div>
                 </div>
-                <div className="field">
-                  <label>Imposto (Simples)</label>
-                  <input
-                    defaultValue={`${(feeRates.imposto_pct * 100).toFixed(2)}%`}
-                    onBlur={(e) => {
-                      const v = parsePercent(e.target.value);
-                      if (v !== null) setFeeRates({ ...feeRates, imposto_pct: v / 100 });
-                    }}
-                  />
-                </div>
-                <div className="field">
-                  <label>Comissão do influenciador</label>
-                  <input
-                    defaultValue={`${(feeRates.comissao_influencer_pct * 100).toFixed(2)}%`}
-                    onBlur={(e) => {
-                      const v = parsePercent(e.target.value);
-                      if (v !== null) setFeeRates({ ...feeRates, comissao_influencer_pct: v / 100 });
-                    }}
-                  />
-                  <div className="suffix">mesma taxa do painel de comissão</div>
-                </div>
-                <div className="field">
-                  <label>Sacolinha</label>
-                  <input
-                    defaultValue={money(feeRates.sacolinha)}
-                    onBlur={(e) => {
-                      const v = parseMoney(e.target.value);
-                      if (v !== null) setFeeRates({ ...feeRates, sacolinha: v });
-                    }}
-                  />
-                  <div className="suffix">custo fixo por peça, igual pra todas</div>
-                </div>
-                <div className="field">
-                  <label>Adesivo</label>
-                  <input
-                    defaultValue={money(feeRates.adesivo)}
-                    onBlur={(e) => {
-                      const v = parseMoney(e.target.value);
-                      if (v !== null) setFeeRates({ ...feeRates, adesivo: v });
-                    }}
-                  />
-                  <div className="suffix">custo fixo por peça, igual pra todas</div>
-                </div>
               </div>
             </div>
           )}
@@ -1140,12 +1102,10 @@ export function Admin() {
                         </tr>
                       ) : (
                         unsold.map((p) => {
-                          const directCost = p.tecido + p.estampa + p.costura + p.outros_acabamentos
-                            + (feeRates?.sacolinha ?? 0) + (feeRates?.adesivo ?? 0);
+                          const directCost = p.tecido + p.estampa + p.costura + p.outros_acabamentos + p.fotolito + p.gravacao_tela + p.corte;
                           const preco = p.preco_venda;
                           const saleCostPct = feeRates
-                            ? feeRates.taxa_shopify_pct + feeRates.taxa_gateway_cartao_pct + feeRates.imposto_pct
-                              + feeRates.comissao_influencer_pct
+                            ? feeRates.taxa_shopify_pct + feeRates.taxa_gateway_cartao_pct
                             : 0;
                           const estimatedProfit = preco !== null ? preco - directCost - preco * saleCostPct : null;
                           const estimatedMarginPct = preco !== null && preco > 0 ? (estimatedProfit! / preco) * 100 : null;

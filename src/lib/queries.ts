@@ -80,6 +80,9 @@ export interface ProductCostRow {
   estampa: number;
   costura: number;
   outros_acabamentos: number;
+  fotolito: number;
+  gravacao_tela: number;
+  corte: number;
   collection: string | null;
   collection_published_at: string | null;
   preco_venda: number | null;
@@ -307,7 +310,7 @@ export async function updateFeeRates(rates: Omit<FeeRatesRow, "id">) {
 export async function fetchProductCosts() {
   const { data, error } = await db()
     .from("product_costs")
-    .select("id, sku, product_name, tecido, estampa, costura, outros_acabamentos, collection, collection_published_at, preco_venda")
+    .select("id, sku, product_name, tecido, estampa, costura, outros_acabamentos, fotolito, gravacao_tela, corte, collection, collection_published_at, preco_venda")
     .order("product_name")
     .returns<ProductCostRow[]>();
   if (error) throw error;
