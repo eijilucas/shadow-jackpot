@@ -113,7 +113,7 @@ function ProductPanel({
   onDelete: (id: string) => void;
   onAdd: () => void;
 }) {
-  const costFields = ["tecido", "estampa", "costura", "outros_acabamentos", "fotolito", "gravacao_tela", "corte"] as const;
+  const costFields = ["tecido", "estampa", "costura", "fotolito", "gravacao_tela", "corte"] as const;
   const newTotal = costFields.reduce((sum, f) => sum + newProduct[f], 0);
 
   return (
@@ -134,9 +134,8 @@ function ProductPanel({
               <th className="num">Tecido</th>
               <th className="num">Estampa</th>
               <th className="num">Costura</th>
-              <th className="num">Outros</th>
               <th className="num">Fotolito</th>
-              <th className="num">Gravação de tela</th>
+              <th className="num">Tela</th>
               <th className="num">Corte</th>
               <th className="num">Total</th>
               <th style={{ width: 40 }}></th>
@@ -144,7 +143,7 @@ function ProductPanel({
           </thead>
           <tbody>
             {products.map((p) => {
-              const total = p.tecido + p.estampa + p.costura + p.outros_acabamentos + p.fotolito + p.gravacao_tela + p.corte;
+              const total = p.tecido + p.estampa + p.costura + p.fotolito + p.gravacao_tela + p.corte;
               return (
                 <tr key={p.id}>
                   <td className="sku">
@@ -554,7 +553,7 @@ export function Admin() {
   // que nem tem linha em product_costs cai no mesmo caso — a venda casa
   // por shopify_product_id e não achou nada.
   const pieceCostTotals = new Map(
-    productCosts.map((p) => [p.product_name, p.tecido + p.estampa + p.costura + p.outros_acabamentos + p.fotolito + p.gravacao_tela + p.corte]),
+    productCosts.map((p) => [p.product_name, p.tecido + p.estampa + p.costura + p.fotolito + p.gravacao_tela + p.corte]),
   );
   const isCostMissing = (pieceName: string) => (pieceCostTotals.get(pieceName) ?? 0) === 0;
 
@@ -1102,7 +1101,7 @@ export function Admin() {
                         </tr>
                       ) : (
                         unsold.map((p) => {
-                          const directCost = p.tecido + p.estampa + p.costura + p.outros_acabamentos + p.fotolito + p.gravacao_tela + p.corte;
+                          const directCost = p.tecido + p.estampa + p.costura + p.fotolito + p.gravacao_tela + p.corte;
                           const preco = p.preco_venda;
                           const saleCostPct = feeRates
                             ? feeRates.taxa_shopify_pct + feeRates.taxa_gateway_cartao_pct
