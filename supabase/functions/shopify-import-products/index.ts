@@ -19,8 +19,10 @@
 //   npx supabase secrets set SHOPIFY_CLIENT_SECRET=<secret do app> --project-ref <ref>
 //   npx supabase secrets set ADMIN_IMPORT_SECRET=<qualquer string longa e aleatória> --project-ref <ref>
 //
-// Deploy:
-//   npx supabase functions deploy shopify-import-products --project-ref <ref>
+// Deploy — o --no-verify-jwt é obrigatório: a auth aqui é o Bearer do
+// ADMIN_IMPORT_SECRET, não um JWT do Supabase, e sem a flag o gateway
+// devolve UNAUTHORIZED_INVALID_JWT_FORMAT antes da função rodar.
+//   npx supabase functions deploy shopify-import-products --no-verify-jwt --project-ref <ref>
 //
 // Disparar a importação:
 //   curl -X POST https://<ref>.supabase.co/functions/v1/shopify-import-products \

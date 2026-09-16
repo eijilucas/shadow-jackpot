@@ -10,8 +10,10 @@
 // secret próprio (reusa o mesmo ADMIN_IMPORT_SECRET do
 // shopify-import-products).
 //
-// Deploy:
-//   npx supabase functions deploy shopify-import-orders --project-ref <ref>
+// Deploy — o --no-verify-jwt é obrigatório: a auth aqui é o Bearer do
+// ADMIN_IMPORT_SECRET, não um JWT do Supabase, e sem a flag o gateway
+// devolve UNAUTHORIZED_INVALID_JWT_FORMAT antes da função rodar.
+//   npx supabase functions deploy shopify-import-orders --no-verify-jwt --project-ref <ref>
 //
 // Disparar (traz pedidos desde a data informada):
 //   curl -X POST https://<ref>.supabase.co/functions/v1/shopify-import-orders \
