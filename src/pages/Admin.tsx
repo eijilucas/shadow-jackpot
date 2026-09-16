@@ -506,10 +506,9 @@ export function Admin() {
   const marketingPool = overhead.filter((r) => r.is_marketing).reduce((sum, r) => sum + r.amount, 0);
   const fixedPool = overhead.filter((r) => !r.is_marketing).reduce((sum, r) => sum + r.amount, 0);
 
-  // Só mostra o painel da coleção MAIS RECENTE (o drop atual — identificado
-  // pelo published_at mais novo, sem precisar hardcodar o nome). Drops
-  // antigos e peças sem coleção ficam escondidos, mas continuam no banco —
-  // só não poluem mais a tela.
+  // O drop MAIS RECENTE (published_at mais novo, sem precisar hardcodar o
+  // nome) — usado só pra decidir o que conta como anomalia no painel "sem
+  // venda" logo abaixo (drop antigo parado de vender não é anomalia).
   const currentCollection = productCosts
     .filter((p) => p.collection && p.collection_published_at)
     .reduce<{ collection: string; publishedAt: string } | null>((latest, p) => {
@@ -519,9 +518,31 @@ export function Admin() {
       return latest;
     }, null);
 
-  const productGroups: [string | null, ProductCostRow[]][] = currentCollection
-    ? [[currentCollection.collection, productCosts.filter((p) => p.collection === currentCollection.collection)]]
-    : [[null, productCosts.filter((p) => p.collection === null)]];
+  // Mostra TODOS os drops — Shadow vende várias coleções em paralelo, não
+  // tem o conceito de "um drop atual só" que o Mental Madness original
+  // tinha. Ordenado do mais recente pro mais antigo; peças sem coleção
+  // ficam num painel à parte, por último.
+  const collectionOrder = Array.from(
+    new Map(
+      productCosts
+        .filter((p): p is ProductCostRow & { collection: string; collection_published_at: string } =>
+          !!p.collection && !!p.collection_published_at,
+        )
+        .map((p) => [p.collection, p.collection_published_at]),
+    ),
+  )
+    .sort(([, a], [, b]) => (a < b ? 1 : a > b ? -1 : 0))
+    .map(([collection]) => collection);
+
+  const productGroups: [string | null, ProductCostRow[]][] = [
+    ...collectionOrder.map((collection): [string, ProductCostRow[]] => [
+      collection,
+      productCosts.filter((p) => p.collection === collection),
+    ]),
+    ...(productCosts.some((p) => p.collection === null)
+      ? ([[null, productCosts.filter((p) => p.collection === null)] as [null, ProductCostRow[]]])
+      : []),
+  ];
 
   // Peça sem custo de produção cadastrado entra no ranking com margem
   // fictícia (só sacolinha e adesivo contam como custo), então marca na
