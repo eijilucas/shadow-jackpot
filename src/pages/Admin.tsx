@@ -969,7 +969,7 @@ export function Admin() {
                     <table>
                       <thead>
                         <tr>
-                          <th>Recebida em</th>
+                          <th>Data</th>
                           <th>Destinatário</th>
                           <th>CEP</th>
                           <th className="num">Preço</th>
@@ -986,7 +986,7 @@ export function Admin() {
                         ) : (
                           pendingShipments.map((s) => (
                             <tr key={s.id}>
-                              <td>{new Date(s.event_received_at).toLocaleString("pt-BR")}</td>
+                              <td>{s.shipment_date ? new Date(s.shipment_date).toLocaleDateString("pt-BR") : "—"}</td>
                               <td>{s.recipient_name ?? "—"}</td>
                               <td>{s.recipient_zipcode ?? "—"}</td>
                               <td className="num">{s.price !== null ? `R$ ${money(s.price)}` : "—"}</td>

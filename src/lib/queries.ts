@@ -382,19 +382,23 @@ export interface MelhorEnvioShipmentRow {
   recipient_name: string | null;
   recipient_zipcode: string | null;
   tracking_code: string | null;
-  event_received_at: string;
+  shipment_date: string | null;
   matched_shopify_order_id: number | null;
 }
 
-// Etiquetas que chegaram pelo webhook do Melhor Envio e ainda não foram
-// ligadas a um pedido Shopify — o Melhor Envio não guarda referência
-// externa, então o admin confirma na mão (CEP/nome/data).
+// Etiquetas puxadas do Melhor Envio e ainda não ligadas a um pedido
+// Shopify — o Melhor Envio não guarda referência externa, então o admin
+// confirma na mão (CEP/nome/data). A conta tem histórico bem mais longo
+// que o nosso (60 dias, limite da API da Shopify), então só mostra as
+// mais recentes — as antigas nunca vão achar pedido correspondente
+// mesmo, iam só poluir a tela.
 export async function fetchUnmatchedShipments() {
   const { data, error } = await db()
     .from("melhor_envio_shipments")
-    .select("id, melhor_envio_id, protocol, status, price, recipient_name, recipient_zipcode, tracking_code, event_received_at, matched_shopify_order_id")
+    .select("id, melhor_envio_id, protocol, status, price, recipient_name, recipient_zipcode, tracking_code, shipment_date, matched_shopify_order_id")
     .is("matched_shopify_order_id", null)
-    .order("event_received_at", { ascending: false })
+    .order("shipment_date", { ascending: false, nullsFirst: false })
+    .limit(60)
     .returns<MelhorEnvioShipmentRow[]>();
   if (error) throw error;
   return data ?? [];
