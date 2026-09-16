@@ -6,6 +6,7 @@ import { DreWaterfall, aggregateDre, type DreTotals } from "../components/DreWat
 import {
   fetchSaleMarginForRange,
   fetchLastSyncTime,
+  fetchEarliestSaleDate,
   currentMonthStart,
   todayStr,
   previousPeriod,
@@ -44,6 +45,11 @@ export function Dashboard() {
   const [rangeEnd, setRangeEnd] = useState(todayStr());
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [earliestDate, setEarliestDate] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    fetchEarliestSaleDate().then((d) => setEarliestDate(d?.slice(0, 10))).catch(() => {});
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -126,6 +132,7 @@ export function Dashboard() {
           <DateRangePicker
             start={rangeStart}
             end={rangeEnd}
+            minDate={earliestDate}
             maxDate={todayStr()}
             onChange={(s, e) => { setRangeStart(s); setRangeEnd(e); }}
           />

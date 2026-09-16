@@ -169,6 +169,23 @@ export async function fetchSkuMarginForRange(start: string, end: string) {
     .sort((a, b) => b.marginPct - a.marginPct);
 }
 
+// Data da venda mais antiga que realmente existe na base — usada como
+// limite inferior do calendário. A API da Shopify só devolve pedidos dos
+// últimos 60 dias sem o escopo read_all_orders, então o histórico tem
+// buracos (mês incompleto, ou mês inteiro faltando); sem esse limite o
+// calendário deixa escolher uma data anterior ao que foi importado e o
+// período volta vazio ou com faturamento sub-representado, sem aviso.
+export async function fetchEarliestSaleDate() {
+  const { data, error } = await db()
+    .from("sale_revenue")
+    .select("sale_date")
+    .order("sale_date", { ascending: true })
+    .limit(1)
+    .maybeSingle<{ sale_date: string }>();
+  if (error) throw error;
+  return data?.sale_date ?? null;
+}
+
 export async function fetchLastSyncTime() {
   const { data, error } = await db()
     .from("sale_revenue")

@@ -21,6 +21,7 @@ import {
   fetchFeeRates,
   updateFeeRates,
   fetchProductCosts,
+  fetchEarliestSaleDate,
   updateProductCost,
   updateProductName,
   deleteProductCost,
@@ -295,6 +296,11 @@ export function Admin() {
   const [pieceSort, setPieceSort] = useState<{ field: keyof PieceMargin; dir: "asc" | "desc" }>({ field: "marginPct", dir: "desc" });
   const [profitRangeStart, setProfitRangeStart] = useState(currentMonthStart());
   const [profitRangeEnd, setProfitRangeEnd] = useState(todayStr());
+  const [earliestDate, setEarliestDate] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    fetchEarliestSaleDate().then((d) => setEarliestDate(d?.slice(0, 10))).catch(() => {});
+  }, []);
   const [couponRows, setCouponRows] = useState<SaleMarginRow[]>([]);
   const [overheadMonth, setOverheadMonth] = useState(currentMonthStart());
   const [newMarketing, setNewMarketing] = useState({ category: "", amount: "0,00", method: "per_revenue" as OverheadRow["allocation_method"], recorrente: false });
@@ -887,6 +893,7 @@ export function Admin() {
                   <DateRangePicker
                     start={profitRangeStart}
                     end={profitRangeEnd}
+                    minDate={earliestDate}
                     maxDate={todayStr()}
                     onChange={(s, e) => { setProfitRangeStart(s); setProfitRangeEnd(e); }}
                   />
@@ -1038,6 +1045,7 @@ export function Admin() {
                   <DateRangePicker
                     start={profitRangeStart}
                     end={profitRangeEnd}
+                    minDate={earliestDate}
                     maxDate={todayStr()}
                     onChange={(s, e) => { setProfitRangeStart(s); setProfitRangeEnd(e); }}
                   />
@@ -1149,6 +1157,7 @@ export function Admin() {
                 <DateRangePicker
                   start={profitRangeStart}
                   end={profitRangeEnd}
+                  minDate={earliestDate}
                   maxDate={todayStr()}
                   onChange={(s, e) => { setProfitRangeStart(s); setProfitRangeEnd(e); }}
                 />
@@ -1176,6 +1185,7 @@ export function Admin() {
                 <DateRangePicker
                   start={profitRangeStart}
                   end={profitRangeEnd}
+                  minDate={earliestDate}
                   maxDate={todayStr()}
                   onChange={(s, e) => { setProfitRangeStart(s); setProfitRangeEnd(e); }}
                 />

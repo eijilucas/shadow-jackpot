@@ -20,11 +20,13 @@ const MONTH_NAMES = [
 export function DateRangePicker({
   start,
   end,
+  minDate,
   maxDate,
   onChange,
 }: {
   start: string;
   end: string;
+  minDate?: string;
   maxDate?: string;
   onChange: (start: string, end: string) => void;
 }) {
@@ -58,6 +60,7 @@ export function DateRangePicker({
 
   function handleDayClick(dateStr: string) {
     if (maxDate && dateStr > maxDate) return;
+    if (minDate && dateStr < minDate) return;
     if (!pendingEnd) {
       if (dateStr < pendingStart) {
         setPendingEnd(pendingStart);
@@ -108,7 +111,7 @@ export function DateRangePicker({
           <div className="date-cal-grid">
             {cells.map((dateStr, i) => {
               if (!dateStr) return <span key={i} className="date-cell empty" />;
-              const disabled = !!maxDate && dateStr > maxDate;
+              const disabled = (!!maxDate && dateStr > maxDate) || (!!minDate && dateStr < minDate);
               const isStart = dateStr === pendingStart;
               const isEnd = !!pendingEnd && dateStr === pendingEnd;
               const inRange = rangeEndForHighlight
