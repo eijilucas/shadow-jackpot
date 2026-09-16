@@ -71,14 +71,18 @@ async function fetchOrdersPage(page: number): Promise<MeOrdersPage> {
   return await res.json();
 }
 
-// Sempre faz upsert de tudo que encontra, página por página — não tenta
-// "parar cedo" ao achar algo já conhecido. A lista vem ordenada do mais
-// recente pro mais antigo, mas uma rodada anterior pode ter batido no
-// MAX_PAGES antes do fim de verdade, e a primeira página fica "toda
-// conhecida" pra sempre depois da primeira importação; parar nela
-// esconderia histórico mais antigo ainda não importado. upsert é
-// idempotente — reprocessar o que já existe não tem custo real.
+// Pára ao achar uma página inteira já conhecida — a lista vem ordenada do
+// mais recente pro mais antigo, então isso é seguro DEPOIS que o backfill
+// completo já rodou uma vez até o fim de verdade (não travado no
+// MAX_PAGES): daí em diante só aparece coisa nova no topo, o resto do
+// histórico nunca muda. Sem isso, rodando de 6 em 6 horas pra sempre, cada
+// execução reprocessaria o histórico inteiro (cresce sem parar) — caro e
+// cada vez mais lento.
 async function importShipments(supabase: SupabaseClient): Promise<{ processadas: number; paginas: number }> {
+  const { data: existing, error: existingError } = await supabase.from("melhor_envio_shipments").select("melhor_envio_id");
+  if (existingError) throw existingError;
+  const knownIds = new Set((existing ?? []).map((r) => r.melhor_envio_id as string));
+
   let processadas = 0;
   let page = 1;
   for (; page <= MAX_PAGES; page++) {
@@ -103,6 +107,7 @@ async function importShipments(supabase: SupabaseClient): Promise<{ processadas:
     if (error) throw error;
     processadas += rows.length;
 
+    if (result.data.every((o) => knownIds.has(o.id))) break;
     if (page >= result.last_page) break;
   }
 
