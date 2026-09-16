@@ -183,10 +183,35 @@ async function importProducts(supabase: SupabaseClient): Promise<number> {
 
   if (stubs.length === 0) return 0;
 
-  const { error } = await supabase
+  // Uma peça pode já ter uma linha em product_costs criada pela venda (o
+  // webhook ou o import de pedidos cria o stub na primeira venda, antes
+  // de este import rodar). Pra essas, só sincroniza a coleção — nunca os
+  // campos de custo, que o admin pode já ter preenchido na mão, e nunca
+  // product_name/sku, que o admin pode ter corrigido manualmente.
+  const { data: existing, error: fetchError } = await supabase
     .from("product_costs")
-    .upsert(stubs, { onConflict: "shopify_product_id", ignoreDuplicates: true });
-  if (error) throw error;
+    .select("shopify_product_id")
+    .in("shopify_product_id", stubs.map((s) => s.shopify_product_id));
+  if (fetchError) throw fetchError;
+  const existingIds = new Set((existing ?? []).map((r) => r.shopify_product_id as number));
+
+  const newStubs = stubs.filter((s) => !existingIds.has(s.shopify_product_id));
+  const collectionUpdates = stubs.filter((s) => existingIds.has(s.shopify_product_id));
+
+  if (newStubs.length > 0) {
+    const { error } = await supabase
+      .from("product_costs")
+      .upsert(newStubs, { onConflict: "shopify_product_id", ignoreDuplicates: true });
+    if (error) throw error;
+  }
+
+  for (const s of collectionUpdates) {
+    const { error } = await supabase
+      .from("product_costs")
+      .update({ collection: s.collection, collection_published_at: s.collection_published_at })
+      .eq("shopify_product_id", s.shopify_product_id);
+    if (error) throw error;
+  }
 
   return stubs.length;
 }

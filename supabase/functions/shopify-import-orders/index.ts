@@ -234,6 +234,11 @@ async function importOrders(supabase: SupabaseClient, since: string): Promise<nu
 
   const rows: SaleRow[] = [];
   const shipRows: Record<string, unknown>[] = [];
+  // Título limpo (sem variante) pra criar o stub em product_costs — não dá
+  // pra reusar `rows`: o product_name de lá é o de exibição da venda,
+  // com o tamanho colado (`Camiseta X - GG`), e isso vazaria pro nome
+  // da peça no admin.
+  const stubRows: { shopify_product_id: number; product_sku: string | null; product_name: string }[] = [];
   for (const order of orders) {
     if (order.cancelled_at) continue;
     if (!COUNTABLE_FINANCIAL_STATUS.has(order.financial_status)) continue;
@@ -246,6 +251,14 @@ async function importOrders(supabase: SupabaseClient, since: string): Promise<nu
       revenue: shippingRevenue(order),
       revenue_synced_at: new Date().toISOString(),
     });
+    for (const item of order.line_items ?? []) {
+      if (!item.product_id) continue;
+      stubRows.push({
+        shopify_product_id: item.product_id,
+        product_sku: item.sku,
+        product_name: item.title ?? item.name ?? "Sem nome",
+      });
+    }
   }
 
   if (rows.length === 0) return 0;
@@ -261,7 +274,7 @@ async function importOrders(supabase: SupabaseClient, since: string): Promise<nu
     .upsert(shipRows, { onConflict: "shopify_order_id" });
   if (shipError) throw shipError;
 
-  await ensureProductCostStubs(supabase, rows);
+  await ensureProductCostStubs(supabase, stubRows);
 
   return rows.length;
 }
