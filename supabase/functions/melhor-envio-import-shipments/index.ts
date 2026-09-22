@@ -1,9 +1,12 @@
 // Puxa as etiquetas da conta Melhor Envio e guarda em melhor_envio_shipments
-// pra conferência manual no admin — o Melhor Envio não tem campo de
-// referência externa (não dá pra saber sozinho qual pedido Shopify é cada
-// etiqueta), então cada uma chega "solta" e o admin liga na tela (por
-// CEP/nome/data). Confirmado, o preço vai pra order_shipping.cost — é
-// isso que a view sale_margin usa como shipping_cost.
+// — o Melhor Envio não tem campo de referência externa (não dá pra saber
+// sozinho qual pedido Shopify é cada etiqueta), então logo depois de
+// importar, tenta casar cada pedido pendente com sua etiqueta por CEP
+// exato + comprada em até 10 dias depois da venda; só confirma quando o
+// cruzamento dá exatamente 1 candidato. Confirmado, o preço vai pra
+// order_shipping.cost — é isso que a view sale_margin usa como
+// shipping_cost. Pedido cujo CEP não bate com nenhuma etiqueta (ou bate
+// com mais de uma) fica pendente pra conferência manual no admin.
 //
 // Por que polling e não webhook: o webhook do Melhor Envio só dispara pra
 // etiqueta comprada PELO MESMO APP que registrou o webhook — como a loja
@@ -114,6 +117,101 @@ async function importShipments(supabase: SupabaseClient): Promise<{ processadas:
   return { processadas, paginas: page };
 }
 
+interface OrderCandidate {
+  shopify_order_id: number;
+  recipient_zipcode: string;
+  sale_date: string;
+}
+
+interface ShipmentCandidate {
+  id: string;
+  recipient_zipcode: string;
+  price: number | null;
+  shipment_date: string;
+}
+
+const MATCH_WINDOW_DAYS = 10;
+const daysBetween = (a: string, b: string) => Math.abs(new Date(a).getTime() - new Date(b).getTime()) / 86_400_000;
+
+// Casa etiqueta com pedido por CEP exato + comprada em até
+// MATCH_WINDOW_DAYS depois da venda — só confirma quando o cruzamento dá
+// EXATAMENTE 1 candidato (ambíguo fica pra conferência manual no admin).
+// Mesma regra usada no backfill manual (verificado contra ~50 pedidos
+// reais antes de virar código).
+async function matchShipments(supabase: SupabaseClient): Promise<{ casadas: number }> {
+  const { data: pendingOrders, error: ordersError } = await supabase
+    .from("order_shipping")
+    .select("shopify_order_id, recipient_zipcode")
+    .is("cost", null)
+    .not("recipient_zipcode", "is", null);
+  if (ordersError) throw ordersError;
+  if (!pendingOrders || pendingOrders.length === 0) return { casadas: 0 };
+
+  const orderIds = pendingOrders.map((o) => o.shopify_order_id);
+  const { data: saleRows, error: saleError } = await supabase
+    .from("sale_revenue")
+    .select("shopify_order_id, sale_date")
+    .in("shopify_order_id", orderIds);
+  if (saleError) throw saleError;
+
+  const earliestSaleDate = new Map<number, string>();
+  for (const r of saleRows ?? []) {
+    const current = earliestSaleDate.get(r.shopify_order_id);
+    if (!current || r.sale_date < current) earliestSaleDate.set(r.shopify_order_id, r.sale_date);
+  }
+
+  const orders: OrderCandidate[] = pendingOrders
+    .map((o) => ({
+      shopify_order_id: o.shopify_order_id,
+      recipient_zipcode: o.recipient_zipcode as string,
+      sale_date: earliestSaleDate.get(o.shopify_order_id) ?? "",
+    }))
+    .filter((o) => o.sale_date);
+
+  const { data: shipments, error: shipError } = await supabase
+    .from("melhor_envio_shipments")
+    .select("id, recipient_zipcode, price, shipment_date")
+    .is("matched_shopify_order_id", null)
+    .not("shipment_date", "is", null)
+    .not("recipient_zipcode", "is", null)
+    .returns<ShipmentCandidate[]>();
+  if (shipError) throw shipError;
+
+  let casadas = 0;
+  const now = new Date().toISOString();
+  for (const order of orders) {
+    const candidates = (shipments ?? []).filter(
+      (s) =>
+        s.recipient_zipcode === order.recipient_zipcode &&
+        new Date(s.shipment_date) >= new Date(order.sale_date) &&
+        daysBetween(s.shipment_date, order.sale_date) <= MATCH_WINDOW_DAYS,
+    );
+    if (candidates.length !== 1) continue;
+    const shipment = candidates[0];
+
+    const { error: updateOrderError } = await supabase
+      .from("order_shipping")
+      .update({ cost: shipment.price, cost_synced_at: now })
+      .eq("shopify_order_id", order.shopify_order_id);
+    if (updateOrderError) throw updateOrderError;
+
+    const { error: updateShipmentError } = await supabase
+      .from("melhor_envio_shipments")
+      .update({ matched_shopify_order_id: order.shopify_order_id, matched_at: now })
+      .eq("id", shipment.id);
+    if (updateShipmentError) throw updateShipmentError;
+
+    // Tira da lista em memória pra não casar a mesma etiqueta duas vezes
+    // com pedidos diferentes na mesma execução.
+    const idx = shipments!.indexOf(shipment);
+    if (idx >= 0) shipments!.splice(idx, 1);
+
+    casadas++;
+  }
+
+  return { casadas };
+}
+
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -136,10 +234,11 @@ Deno.serve(async (req) => {
 
   try {
     const { processadas, paginas } = await importShipments(supabase);
-    return new Response(JSON.stringify({ ok: true, etiquetas_processadas: processadas, paginas_lidas: paginas }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+    const { casadas } = await matchShipments(supabase);
+    return new Response(
+      JSON.stringify({ ok: true, etiquetas_processadas: processadas, paginas_lidas: paginas, etiquetas_casadas: casadas }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
   } catch (error) {
     console.error(error);
     const message = error instanceof Error ? error.message : JSON.stringify(error);

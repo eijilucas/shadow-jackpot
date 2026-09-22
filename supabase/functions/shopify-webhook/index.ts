@@ -74,6 +74,7 @@ interface ShopifyOrder {
   payment_gateway_names?: string[];
   total_shipping_price_set?: ShopifyMoneySet;
   shipping_lines?: { price?: string }[];
+  shipping_address?: { name?: string; zip?: string };
 }
 
 // Frete cobrado do cliente no checkout. Prefere total_shipping_price_set (já
@@ -146,12 +147,17 @@ async function handleOrderPaid(supabase: SupabaseClient, order: ShopifyOrder) {
 
   // Frete cobrado do pedido — a coluna `cost` (frete real pago) é preenchida
   // separado pelo shipping-cost-callback, por isso não vai no payload aqui.
+  // recipient_name/zipcode: só pra casar a etiqueta do Melhor Envio depois
+  // (eles não guardam referência ao pedido Shopify) — não entra em nenhum
+  // cálculo de margem.
   const { error: shipError } = await supabase.from("order_shipping").upsert(
     {
       shopify_order_id: order.id,
       order_number: order.order_number != null ? String(order.order_number) : null,
       revenue: shippingRevenue(order),
       revenue_synced_at: new Date().toISOString(),
+      recipient_name: order.shipping_address?.name ?? null,
+      recipient_zipcode: order.shipping_address?.zip?.replace(/\D/g, "") ?? null,
     },
     { onConflict: "shopify_order_id" },
   );

@@ -76,6 +76,7 @@ interface ShopifyOrder {
   payment_gateway_names?: string[];
   total_shipping_price_set?: { shop_money?: { amount?: string } };
   shipping_lines?: { price?: string }[];
+  shipping_address?: { name?: string; zip?: string };
 }
 
 // Frete cobrado do cliente no checkout.
@@ -250,6 +251,10 @@ async function importOrders(supabase: SupabaseClient, since: string): Promise<nu
       order_number: order.order_number != null ? String(order.order_number) : null,
       revenue: shippingRevenue(order),
       revenue_synced_at: new Date().toISOString(),
+      // Só pra casar a etiqueta do Melhor Envio depois (eles não guardam
+      // referência ao pedido Shopify) — não entra em cálculo de margem.
+      recipient_name: order.shipping_address?.name ?? null,
+      recipient_zipcode: order.shipping_address?.zip?.replace(/\D/g, "") ?? null,
     });
     for (const item of order.line_items ?? []) {
       if (!item.product_id) continue;
