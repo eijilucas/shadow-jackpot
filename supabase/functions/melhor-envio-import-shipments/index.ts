@@ -120,28 +120,37 @@ async function importShipments(supabase: SupabaseClient): Promise<{ processadas:
 interface OrderCandidate {
   shopify_order_id: number;
   recipient_zipcode: string;
+  recipient_name: string | null;
   sale_date: string;
 }
 
 interface ShipmentCandidate {
   id: string;
   recipient_zipcode: string;
+  recipient_name: string | null;
   price: number | null;
   shipment_date: string;
 }
 
-const MATCH_WINDOW_DAYS = 10;
+// Vendedor às vezes só compra a etiqueta bem depois da venda (achado real:
+// um lote de pedidos de agosto só ganhou etiqueta 11 a 21 dias depois) —
+// 30 dias cobre isso com folga.
+const MATCH_WINDOW_DAYS = 30;
 const daysBetween = (a: string, b: string) => Math.abs(new Date(a).getTime() - new Date(b).getTime()) / 86_400_000;
+const normalizeName = (n: string | null) => (n ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 
 // Casa etiqueta com pedido por CEP exato + comprada em até
-// MATCH_WINDOW_DAYS depois da venda — só confirma quando o cruzamento dá
-// EXATAMENTE 1 candidato (ambíguo fica pra conferência manual no admin).
-// Mesma regra usada no backfill manual (verificado contra ~50 pedidos
-// reais antes de virar código).
+// MATCH_WINDOW_DAYS depois da venda. Mais de um candidato no mesmo CEP e
+// janela não é raro (endereço repetido — família, prédio, escritório):
+// nesse caso desempata por nome do destinatário batendo exato e, se ainda
+// empatar, pela etiqueta com a data mais próxima da venda (a mais
+// distante tende a ser de OUTRO pedido do mesmo cliente). Só confirma
+// quando sobra exatamente 1 depois disso — empate de verdade (mesmo
+// nome, mesma data, mesmo preço) fica pra conferência manual no admin.
 async function matchShipments(supabase: SupabaseClient): Promise<{ casadas: number }> {
   const { data: pendingOrders, error: ordersError } = await supabase
     .from("order_shipping")
-    .select("shopify_order_id, recipient_zipcode")
+    .select("shopify_order_id, recipient_zipcode, recipient_name")
     .is("cost", null)
     .not("recipient_zipcode", "is", null);
   if (ordersError) throw ordersError;
@@ -164,13 +173,14 @@ async function matchShipments(supabase: SupabaseClient): Promise<{ casadas: numb
     .map((o) => ({
       shopify_order_id: o.shopify_order_id,
       recipient_zipcode: o.recipient_zipcode as string,
+      recipient_name: o.recipient_name,
       sale_date: earliestSaleDate.get(o.shopify_order_id) ?? "",
     }))
     .filter((o) => o.sale_date);
 
   const { data: shipments, error: shipError } = await supabase
     .from("melhor_envio_shipments")
-    .select("id, recipient_zipcode, price, shipment_date")
+    .select("id, recipient_zipcode, recipient_name, price, shipment_date")
     .is("matched_shopify_order_id", null)
     .not("shipment_date", "is", null)
     .not("recipient_zipcode", "is", null)
@@ -180,12 +190,24 @@ async function matchShipments(supabase: SupabaseClient): Promise<{ casadas: numb
   let casadas = 0;
   const now = new Date().toISOString();
   for (const order of orders) {
-    const candidates = (shipments ?? []).filter(
+    let candidates = (shipments ?? []).filter(
       (s) =>
         s.recipient_zipcode === order.recipient_zipcode &&
         new Date(s.shipment_date) >= new Date(order.sale_date) &&
         daysBetween(s.shipment_date, order.sale_date) <= MATCH_WINDOW_DAYS,
     );
+
+    if (candidates.length > 1 && order.recipient_name) {
+      const byName = candidates.filter((s) => normalizeName(s.recipient_name) === normalizeName(order.recipient_name));
+      if (byName.length > 0) candidates = byName;
+    }
+    if (candidates.length > 1) {
+      const sorted = [...candidates].sort((a, b) => daysBetween(a.shipment_date, order.sale_date) - daysBetween(b.shipment_date, order.sale_date));
+      const closest = daysBetween(sorted[0].shipment_date, order.sale_date);
+      const tiedAtClosest = sorted.filter((s) => daysBetween(s.shipment_date, order.sale_date) === closest);
+      if (tiedAtClosest.length === 1) candidates = tiedAtClosest;
+    }
+
     if (candidates.length !== 1) continue;
     const shipment = candidates[0];
 
