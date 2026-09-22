@@ -190,14 +190,19 @@ async function ensureProductCostStubs(
 ) {
   const eligible = saleRows.filter((r) => !EXCLUDED_NAME_PATTERNS.some((re) => re.test(r.product_name)));
   const uniqueByProduct = new Map(eligible.map((r) => [r.shopify_product_id, { sku: r.product_sku, product_name: r.product_name }]));
+  // Peça nova nasce em R$115 (custo base) — o trigger apply_volume_discount
+  // em sale_revenue baixa pra R$69 sozinho assim que passar de 25 vendas.
   const stubs = Array.from(uniqueByProduct, ([shopify_product_id, { sku, product_name }]) => ({
     shopify_product_id,
     sku,
     product_name,
-    tecido: 0,
-    estampa: 0,
-    costura: 0,
+    tecido: 19.20,
+    estampa: 19.16,
+    costura: 19.16,
     outros_acabamentos: 0,
+    fotolito: 19.16,
+    gravacao_tela: 19.16,
+    corte: 19.16,
   }));
 
   const { error } = await supabase

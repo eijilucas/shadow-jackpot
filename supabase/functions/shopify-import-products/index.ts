@@ -62,6 +62,9 @@ interface ProductCostStub {
   estampa: number;
   costura: number;
   outros_acabamentos: number;
+  fotolito: number;
+  gravacao_tela: number;
+  corte: number;
 }
 
 interface CollectionInfo {
@@ -166,6 +169,8 @@ async function importProducts(supabase: SupabaseClient): Promise<number> {
 
   // Uma linha por PEÇA, não por variante — pega o SKU da primeira
   // variante que tiver um preenchido (se nenhuma tiver, fica null).
+  // Peça nova nasce em R$115 (custo base) — o trigger apply_volume_discount
+  // em sale_revenue baixa pra R$69 sozinho assim que passar de 25 vendas.
   const stubs: ProductCostStub[] = products.map((product) => {
     const info = productCollection.get(product.id);
     return {
@@ -174,10 +179,13 @@ async function importProducts(supabase: SupabaseClient): Promise<number> {
       product_name: product.title,
       collection: info?.title ?? null,
       collection_published_at: info?.publishedAt ?? null,
-      tecido: 0,
-      estampa: 0,
-      costura: 0,
+      tecido: 19.20,
+      estampa: 19.16,
+      costura: 19.16,
       outros_acabamentos: 0,
+      fotolito: 19.16,
+      gravacao_tela: 19.16,
+      corte: 19.16,
     };
   });
 
